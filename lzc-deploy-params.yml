@@ -1,0 +1,21 @@
+params:
+  - id: admin_email
+    type: string
+    name: Admin email
+    description: "Email used to sign in to NocoDB as the super admin."
+    default_value: "admin@localhost"
+    optional: false
+  - id: admin_password
+    type: secret
+    name: Admin password
+    description: "Password of the super admin account."
+    default_value: "$random(len=20)"
+    optional: false
+locales:
+  zh:
+    admin_email:
+      name: 管理员邮箱
+      description: 用这个邮箱登录 NocoDB 超级管理员账号。
+    admin_password:
+      name: 管理员密码
+      description: 超级管理员账号的密码，默认随机生成，请记下来。

@@ -1,0 +1,18 @@
+package: community.lazycat.app.nocodb
+name: NocoDB
+version: 0.0.0
+description: "Spreadsheet-database hybrid: turn any database into a smart spreadsheet with forms, views and APIs."
+min_os_version: "1.5.0"
+homepage: https://nocodb.com/
+author: NocoDB
+license: Sustainable Use License 1.0
+permissions:
+  required:
+    - net.internet
+locales:
+  zh:
+    name: NocoDB
+    description: "把数据库变成智能表格：表单、视图、API，像用 Excel 一样管理数据。"
+  en:
+    name: NocoDB
+    description: "Spreadsheet-database hybrid: turn any database into a smart spreadsheet with forms, views and APIs."
