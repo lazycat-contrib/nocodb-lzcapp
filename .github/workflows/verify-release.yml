@@ -1,0 +1,135 @@
+name: Verify NocoDB Release on GitHub
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify
+        required: false
+        default: v2026.10.1
+permissions:
+  contents: read
+concurrency:
+  group: nocodb-release-verification
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="$(gh release view --json tagName --jq .tagName)"; fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Download exact Release asset on runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ASSET_NAME="community.lazycat.app.nocodb-${RELEASE_TAG}.lpk"
+          echo "ASSET_NAME=$ASSET_NAME" >> "$GITHUB_ENV"
+          gh release view "$RELEASE_TAG" --json tagName,assets > release-metadata.json
+          gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME" --dir verify-pkg
+
+      - name: Verify package contents
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, tarfile, yaml
+
+          tag = os.environ['RELEASE_TAG']
+          name = os.environ['ASSET_NAME']
+          pkg = __import__('pathlib').Path('verify-pkg') / name
+          assert pkg.is_file(), pkg
+
+          h = hashlib.sha256()
+          with pkg.open('rb') as fh:
+              for chunk in iter(lambda: fh.read(1 << 20), b''):
+                  h.update(chunk)
+
+          with tarfile.open(pkg, 'r:') as package:
+              members = package.getnames()
+              for required in ('manifest.yml', 'package.yml', 'content.tar', 'icon.png'):
+                  assert required in members, (required, members)
+
+              info = yaml.safe_load(package.extractfile('package.yml').read())
+              assert info['package'] == 'community.lazycat.app.nocodb', info['package']
+              assert info['name'] == 'NocoDB', info['name']
+              assert info['version'] == tag.lstrip('v'), (info['version'], tag)
+              assert 'Sustainable Use' in info['license'], info['license']
+              assert info['min_os_version'] == '1.5.0', info['min_os_version']
+
+              raw = package.extractfile('manifest.yml').read().decode()
+              m = yaml.safe_load(raw)
+              app = m['application']
+              assert app['subdomain'] == 'nocodb', app['subdomain']
+              # own accounts and roles: must not sit behind the platform gate
+              assert app.get('public_path') == ['/'], app.get('public_path')
+              ups = app['upstreams']
+              assert any(u['location'] == '/' and 'nocodb:8080' in (u.get('backend') or '')
+                         for u in ups), ups
+
+              svcs = m['services']
+              assert set(svcs) == {'nocodb'}, set(svcs)
+              svc = svcs['nocodb']
+              assert 'nocodb/nocodb' in svc['image'], svc['image']
+              # date-style tags: 2026.10.1 with a v prefix on the release
+              assert svc['image'].endswith(':' + tag.lstrip('v')), svc['image']
+
+              env = ' '.join(str(x) for x in svc['environment'])
+              # seeding the admin is a security requirement here, not a convenience:
+              # without it NocoDB gives super-admin to the first signup on a publicly
+              # reachable instance
+              assert 'NC_ADMIN_EMAIL=' in env and '.U.admin_email' in env, env
+              assert 'NC_ADMIN_PASSWORD=' in env and '.U.admin_password' in env, env
+              assert 'NC_PUBLIC_URL=https://' in env, env
+              assert 'NC_DISABLE_TELE=true' in env, env
+
+              binds = svc['binds']
+              # upstream documents /usr/app/data as the volume for the SQLite db
+              assert any(b.endswith(':/usr/app/data') for b in binds), binds
+              for b in binds:
+                  assert b.startswith('/lzcapp/var/'), b
+
+              params = yaml.safe_load(package.extractfile('deploy_params.yml').read())
+              by_id = {q['id']: q for q in params['params']}
+              assert set(by_id) == {'admin_email', 'admin_password'}, set(by_id)
+              assert by_id['admin_password']['type'] == 'secret'
+              assert 'random' in str(by_id['admin_password'].get('default_value', ''))
+              refs = set(re.findall(r'\.U\.([A-Za-z0-9_]+)', raw))
+              assert refs <= set(by_id), (refs, set(by_id))
+
+              assert 'healthcheck' not in svc, svc
+              assert 'lzc-file-chooser' not in raw
+              assert 'docker.sock' not in raw
+              assert 'privileged' not in raw
+              assert 'usage' in m and str(m['usage']).strip(), 'usage section missing'
+              usage_text = str(m['usage'])
+              assert ('真机验证' in usage_text or '实机验证' in usage_text), 'usage must state no device test'
+
+              with tarfile.open(fileobj=package.extractfile('content.tar')) as content:
+                  cmembers = content.getnames()
+                  lic = [n for n in cmembers if 'licenses/' in n]
+                  assert lic, cmembers
+                  main_lic = [n for n in lic if n.endswith('/LICENSE')]
+                  target = main_lic[0] if main_lic else lic[0]
+                  license_text = content.extractfile(target).read().decode()
+                  flat = ' '.join(license_text.split())
+                  assert 'Sustainable Use License' in flat, flat[:150]
+                  assert 'free of charge for non-commercial purposes' in flat.replace('\u2019', "'"), \
+                      'redistribution clause must be present in the bundled license'
+
+          result = {
+              'verified': True,
+              'tag': tag,
+              'sha256': h.hexdigest(),
+              'size': pkg.stat().st_size,
+              'runtime_tested': False,
+              'note': 'single container with SQLite; admin seeded from env so the first signup cannot claim super-admin',
+          }
+          print(json.dumps(result))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          PY
