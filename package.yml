@@ -1,6 +1,6 @@
 package: community.lazycat.app.nocodb
 name: NocoDB
-version: 0.0.0
+version: 2026.10.1
 description: "Spreadsheet-database hybrid: turn any database into a smart spreadsheet with forms, views and APIs."
 min_os_version: "1.5.0"
 homepage: https://nocodb.com/
